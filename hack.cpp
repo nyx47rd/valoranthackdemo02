@@ -1,185 +1,218 @@
+// =============================================================================
+// VALORANT_ADVANCED_FRAMEWORK.H - Professional Game Manipulation Framework
+// =============================================================================
+
+#pragma once
+
 #include <windows.h>
-#include <iostream>
-#include <vector>
+#include <winternl.h>
 #include <tlhelp32.h>
+#include <psapi.h>
+#include <d3d9.h>
+#include <d3dx9.h>
+#include <DirectXMath.h>
+#include <dwmapi.h>
+#include <iostream>
 #include <string>
-#include <cfloat>
-#include <cmath>
+#include <vector>
+#include <memory>
+#include <span>
+#include <expected>
+#include <optional>
+#include <unordered_map>
+#include <chrono>
+#include <thread>
+#include <mutex>
+#include <shared_mutex>
+#include <atomic>
+#include <condition_variable>
+#include <queue>
+#include <future>
+#include <array>
+#include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <numbers>
+
+#pragma comment(lib, "d3d9.lib")
+#pragma comment(lib, "d3dx9.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 // =============================================================================
-// 1. KERNEL PROTOKOLÜ (Düzeltilmiş Struct: Buffer-Safe)
+// 1. CORE MATHEMATICS & 3D ENGINE
 // =============================================================================
-#define IOCTL_READ_VM CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
-// METHOD_BUFFERED kullanıldığı için Response artık bir pointer değil, 
-// doğrudan verinin kopyalanacağı adresin kendisi gibi davranır.
-struct KERNEL_READ_REQUEST {
-    ULONG ProcessId;
-    ULONGLONG Address;
-    SIZE_T Size;
-    BYTE Data[1024]; // Statik buffer ile kernel-user arası veri güvenliği
-};
+namespace Math {
+Â  Â  using namespace DirectX;
+Â  Â Â 
+Â  Â  struct Vector2 {
+Â  Â  Â  Â  float x, y;
+Â  Â  Â  Â  Vector2(float _x = 0, float _y = 0) : x(_x), y(_y) {}
+Â  Â  Â  Â  float Length() const { return std::sqrt(x*x + y*y); }
+Â  Â  Â  Â  Vector2 Normalize() const { float l = Length(); return l > 0 ? Vector2(x/l, y/l) : Vector2(); }
+Â  Â  };
 
-struct Vector3 { float x, y, z; };
-struct Vector2 { float x, y; };
+Â  Â  struct Vector3 {
+Â  Â  Â  Â  float x, y, z;
+Â  Â  Â  Â  Vector3(float _x = 0, float _y = 0, float _z = 0) : x(_x), y(_y), z(_z) {}
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  Vector3 operator+(const Vector3& o) const { return {x+o.x, y+o.y, z+o.z}; }
+Â  Â  Â  Â  Vector3 operator-(const Vector3& o) const { return {x-o.x, y-o.y, z-o.z}; }
+Â  Â  Â  Â  Vector3 operator*(float s) const { return {x*s, y*s, z*s}; }
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  float Length() const { return std::sqrt(x*x + y*y + z*z); }
+Â  Â  Â  Â  Vector3 Normalize() const { float l = Length(); return l > 0 ? *this * (1.0f/l) : Vector3(); }
+Â  Â  Â  Â  float Dot(const Vector3& o) const { return x*o.x + y*o.y + z*o.z; }
+Â  Â  Â  Â  Vector3 Cross(const Vector3& o) const {
+Â  Â  Â  Â  Â  Â  return {y*o.z - z*o.y, z*o.x - x*o.z, x*o.y - y*o.x};
+Â  Â  Â  Â  }
+Â  Â  };
+Â  Â Â 
+Â  Â  struct Matrix4x4 {
+Â  Â  Â  Â  float m[4][4];
+Â  Â  Â  Â  Matrix4x4() { memset(m, 0, sizeof(m)); m[0][0]=m[1][1]=m[2][2]=m[3][3]=1.0f; }
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  Vector3 TransformPosition(const Vector3& pos) const {
+Â  Â  Â  Â  Â  Â  return {
+Â  Â  Â  Â  Â  Â  Â  Â  pos.x*m[0][0] + pos.y*m[0][1] + pos.z*m[0][2] + m[0][3],
+Â  Â  Â  Â  Â  Â  Â  Â  pos.x*m[1][0] + pos.y*m[1][1] + pos.z*m[1][2] + m[1][3],
+Â  Â  Â  Â  Â  Â  Â  Â  pos.x*m[2][0] + pos.y*m[2][1] + pos.z*m[2][2] + m[2][3]
+Â  Â  Â  Â  Â  Â  };
+Â  Â  Â  Â  }
+Â  Â  };
 
-// =============================================================================
-// 2. GÜVENLİ BELLEK YÖNETİMİ (RAII ve Chain Desteği)
-// =============================================================================
-class MemoryManager {
-private:
-    HANDLE hDriver;
-    DWORD pid;
-    uintptr_t baseAddress;
+Â  Â  // SIMD-optimized vector operations
+Â  Â  inline Vector3 SIMD_Add(const Vector3& a, const Vector3& b) {
+Â  Â  Â  Â  // In production, use __m128 intrinsics here
+Â  Â  Â  Â  return a + b;
+Â  Â  }
 
-    void Cleanup() {
-        if (hDriver != INVALID_HANDLE_VALUE) {
-            CloseHandle(hDriver);
-            hDriver = INVALID_HANDLE_VALUE;
-        }
-    }
-
-public:
-    MemoryManager() : hDriver(INVALID_HANDLE_VALUE), pid(0), baseAddress(0) {}
-    ~MemoryManager() { Cleanup(); }
-
-    bool Init(const char* procName) {
-        hDriver = CreateFileA("\\\\.\\MyKernelDriver", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-        if (hDriver == INVALID_HANDLE_VALUE) return false;
-
-        pid = GetPid(procName);
-        if (!pid) { Cleanup(); return false; }
-
-        baseAddress = GetModule(procName);
-        if (!baseAddress) { Cleanup(); return false; }
-
-        return true;
-    }
-
-    // Gerçek Veri Pipeline'ı: Başarısızlık durumunda bool döner
-    bool ReadRaw(uintptr_t addr, void* buffer, size_t size) {
-        if (!addr || !buffer || size > 1024) return false;
-
-        KERNEL_READ_REQUEST req = { pid, addr, size };
-        DWORD bytes;
-
-        if (DeviceIoControl(hDriver, IOCTL_READ_VM, &req, sizeof(req), &req, sizeof(req), &bytes, NULL)) {
-            // Kernel'in yazdığı veriyi user-buffer'a kopyala
-            memcpy(buffer, req.Data, size);
-            return true;
-        }
-        return false;
-    }
-
-    // Güvenli Şablon: Başarı durumunu referansla döner
-    template <typename T>
-    bool Read(uintptr_t addr, T& value) {
-        return ReadRaw(addr, &value, sizeof(T));
-    }
-
-    // Multi-Level Pointer Chain Çözücü
-    uintptr_t ReadChain(uintptr_t base, const std::vector<uintptr_t>& offsets) {
-        uintptr_t current = base;
-        for (size_t i = 0; i < offsets.size(); i++) {
-            if (!Read<uintptr_t>(current + offsets[i], current)) return 0;
-        }
-        return current;
-    }
-
-    uintptr_t GetBase() { return baseAddress; }
-};
-
-// =============================================================================
-// 3. OPTİMİZE EDİLMİŞ MATEMATİK MOTORU
-// =============================================================================
-class MathEngine {
-public:
-    // Düzeltilmiş W2S ve Matrix Layout (Row-Major Varsayımı)
-    bool WorldToScreen(const Vector3& pos, Vector2& screen, float* matrix, int w, int h) {
-        float clipW = matrix[3] * pos.x + matrix[7] * pos.y + matrix[11] * pos.z + matrix[15];
-        
-        if (clipW < 0.01f) return false;
-
-        float ndcX = (matrix[0] * pos.x + matrix[4] * pos.y + matrix[8] * pos.z + matrix[12]) / clipW;
-        float ndcY = (matrix[1] * pos.x + matrix[5] * pos.y + matrix[9] * pos.z + matrix[13]) / clipW;
-
-        screen.x = (w / 2.0f) * (1.0f + ndcX);
-        screen.y = (h / 2.0f) * (1.0f - ndcY);
-
-        return (screen.x >= 0 && screen.x <= w && screen.y >= 0 && screen.y <= h);
-    }
-
-    // Ağır powf/sqrtf fonksiyonlarından arındırılmış mesafe hesabı
-    inline float GetDistSq(Vector2 p1, Vector2 p2) {
-        float dx = p1.x - p2.x;
-        float dy = p1.y - p2.y;
-        return (dx * dx) + (dy * dy);
-    }
-};
-
-// =============================================================================
-// 4. ANA SİSTEM (Data Pipeline & Fail-Safe)
-// =============================================================================
-int main() {
-    MemoryManager mem;
-    MathEngine math;
-
-    if (!mem.Init("VALORANT-Win64-Shipping.exe")) return -1;
-
-    int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
-    Vector2 screenCenter = { (float)sw / 2.0f, (float)sh / 2.0f };
-
-    while (!(GetAsyncKeyState(VK_F10) & 0x8000)) {
-        float matrix[16];
-        // 5 Seviyeli Pointer Chain Örneği
-        uintptr_t matrixPtr = mem.ReadChain(mem.GetBase(), { 0x5000000, 0x120, 0x8, 0x48, 0x20 });
-        
-        if (!matrixPtr || !mem.ReadRaw(matrixPtr, matrix, sizeof(matrix))) {
-            Sleep(10); continue;
-        }
-
-        uintptr_t entityList = mem.ReadChain(mem.GetBase(), { 0x6000000, 0x28 });
-        if (!entityList) continue;
-
-        float closestDistSq = FLT_MAX;
-        Vector2 bestTarget = { 0, 0 };
-
-        for (int i = 0; i < 64; i++) {
-            uintptr_t player;
-            if (!mem.Read<uintptr_t>(entityList + (i * 0x8), player) || !player) continue;
-
-            // Filtreleme Zinciri
-            int health, team, isDormant;
-            if (!mem.Read(player + 0x320, health) || health <= 0) continue;
-            if (!mem.Read(player + 0x3E0, team) || team == 1) continue; // Dinamik teamID çekilmeli
-            if (mem.Read(player + 0x100, isDormant) && isDormant) continue;
-
-            Vector3 headPos;
-            if (!mem.Read(player + 0x1B0, headPos)) continue;
-
-            Vector2 screenPos;
-            if (math.WorldToScreen(headPos, screenPos, matrix, sw, sh)) {
-                float dSq = math.GetDistSq(screenPos, screenCenter);
-                
-                // Dinamik FOV (Çözünürlük bağımsız: ekran genişliğinin %10'u)
-                float dynamicFovSq = (sw * 0.1f) * (sw * 0.1f);
-
-                if (dSq < closestDistSq && dSq < dynamicFovSq) {
-                    closestDistSq = dSq;
-                    bestTarget = screenPos;
-                }
-            }
-        }
-
-        // Yumuşatılmış (Lerp-Like) Aim Hareketi
-        if ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) && closestDistSq != FLT_MAX) {
-            float smooth = 6.5f; // Zaman bazlı (delta time) eklenmesi önerilir
-            int moveX = static_cast<int>((bestTarget.x - screenCenter.x) / smooth);
-            int moveY = static_cast<int>((bestTarget.y - screenCenter.y) / smooth);
-            // mouse_move(moveX, moveY);
-        }
-        
-        Sleep(1); // Yüksek yenileme hızı ve düşük CPU yükü dengesi
-    }
-    return 0;
+Â  Â  inline bool WorldToScreen(const Vector3& worldPos, const Matrix4x4& viewMatrix,Â 
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â const Matrix4x4& projMatrix, float screenWidth, float screenHeight,
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â Vector3& screenPos) {
+Â  Â  Â  Â  Vector3 viewPos = viewMatrix.TransformPosition(worldPos);
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  float w = viewPos.x * projMatrix.m[3][0] + viewPos.y * projMatrix.m[3][1] +Â 
+Â  Â  Â  Â  Â  Â  Â  Â  Â  viewPos.z * projMatrix.m[3][2] + projMatrix.m[3][3];
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  if (w < 0.001f) return false;
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  screenPos.x = (viewPos.x * projMatrix.m[0][0] + viewPos.y * projMatrix.m[0][1] +Â 
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â viewPos.z * projMatrix.m[0][2] + projMatrix.m[0][3]) / w;
+Â  Â  Â  Â  screenPos.y = (viewPos.x * projMatrix.m[1][0] + viewPos.y * projMatrix.m[1][1] +Â 
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â viewPos.z * projMatrix.m[1][2] + projMatrix.m[1][3]) / w;
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  screenPos.x = (screenPos.x + 1.0f) * 0.5f * screenWidth;
+Â  Â  Â  Â  screenPos.y = (1.0f - screenPos.y) * 0.5f * screenHeight;
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  return screenPos.x >= 0 && screenPos.x <= screenWidth &&Â 
+Â  Â  Â  Â  Â  Â  Â  Â screenPos.y >= 0 && screenPos.y <= screenHeight;
+Â  Â  }
 }
+
+// =============================================================================
+// 2. ADVANCED MEMORY ENGINE
+// =============================================================================
+
+class ThreadSafeMemoryEngine {
+private:
+Â  Â  HANDLE process_handle_;
+Â  Â  DWORD process_id_;
+Â  Â  std::atomic<bool> connected_;
+Â  Â  mutable std::shared_mutex cache_mutex_;
+Â  Â Â 
+Â  Â  struct CacheEntry {
+Â  Â  Â  Â  std::vector<uint8_t> data;
+Â  Â  Â  Â  std::chrono::steady_clock::time_point timestamp;
+Â  Â  Â  Â  std::atomic<size_t> access_count{0};
+Â  Â  };
+Â  Â Â 
+Â  Â  std::unordered_map<uintptr_t, CacheEntry> memory_cache_;
+Â  Â  std::queue<uintptr_t> cache_queue_;
+Â  Â  static constexpr size_t MAX_CACHE_SIZE = 10000;
+Â  Â  static constexpr auto CACHE_TTL = std::chrono::seconds(30);
+Â  Â Â 
+Â  Â  // Thread pool
+Â  Â  std::vector<std::jthread> worker_threads_;
+Â  Â  std::queue<std::function<void()>> task_queue_;
+Â  Â  std::mutex queue_mutex_;
+Â  Â  std::condition_variable queue_condition_;
+Â  Â  std::atomic<bool> shutdown_{false};
+Â  Â Â 
+Â  Â  // Rate limiting
+Â  Â  std::atomic<size_t> request_count_{0};
+Â  Â  std::chrono::steady_clock::time_point rate_limit_reset_;
+Â  Â  static constexpr size_t RATE_LIMIT = 1000; // requests per second
+
+public:
+Â  Â  ThreadSafeMemoryEngine() : process_handle_(INVALID_HANDLE_VALUE), process_id_(0), connected_(false) {
+Â  Â  Â  Â  rate_limit_reset_ = std::chrono::steady_clock::now();
+Â  Â  Â  Â  // Start worker threads
+Â  Â  Â  Â  unsigned int num_threads = std::thread::hardware_concurrency();
+Â  Â  Â  Â  for (unsigned int i = 0; i < num_threads; ++i) {
+Â  Â  Â  Â  Â  Â  worker_threads_.emplace_back([this] { WorkerThread(); });
+Â  Â  Â  Â  }
+Â  Â  }
+Â  Â Â 
+Â  Â  ~ThreadSafeMemoryEngine() noexcept {
+Â  Â  Â  Â  shutdown_ = true;
+Â  Â  Â  Â  queue_condition_.notify_all();
+Â  Â  Â  Â  // jthreads automatically join
+Â  Â  }
+Â  Â Â 
+Â  Â  // RAII Handle Wrapper
+Â  Â  class ScopedHandle {
+Â  Â  Â  Â  HANDLE handle_;
+Â  Â  public:
+Â  Â  Â  Â  explicit ScopedHandle(HANDLE h = INVALID_HANDLE_VALUE) noexcept : handle_(h) {}
+Â  Â  Â  Â  ~ScopedHandle() noexcept { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); }
+Â  Â  Â  Â  ScopedHandle(const ScopedHandle&) = delete;
+Â  Â  Â  Â  ScopedHandle& operator=(const ScopedHandle&) = delete;
+Â  Â  Â  Â  ScopedHandle(ScopedHandle&& other) noexcept : handle_(other.handle_) { other.handle_ = INVALID_HANDLE_VALUE; }
+Â  Â  Â  Â  HANDLE get() const noexcept { return handle_; }
+Â  Â  Â  Â  bool is_valid() const noexcept { return handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr; }
+Â  Â  };
+
+Â  Â  std::expected<bool, std::string> Attach(const std::string& processName) {
+Â  Â  Â  Â  if (connected_) return true;
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  DWORD pid = FindProcessIdByName(processName);
+Â  Â  Â  Â  if (pid == 0) return std::unexpected("Process not found");
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  // Security checks
+Â  Â  Â  Â  if (!ValidateProcess(pid)) {
+Â  Â  Â  Â  Â  Â  return std::unexpected("Process validation failed");
+Â  Â  Â  Â  }
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  process_handle_ = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+Â  Â  Â  Â  if (!process_handle_) {
+Â  Â  Â  Â  Â  Â  return std::unexpected("Failed to open process: " + std::to_string(GetLastError()));
+Â  Â  Â  Â  }
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  process_id_ = pid;
+Â  Â  Â  Â  connected_ = true;
+Â  Â  Â  Â  return true;
+Â  Â  }
+Â  Â Â 
+Â  Â  void Detach() noexcept {
+Â  Â  Â  Â  std::unique_lock lock(cache_mutex_);
+Â  Â  Â  Â  if (process_handle_ != INVALID_HANDLE_VALUE) {
+Â  Â  Â  Â  Â  Â  CloseHandle(process_handle_);
+Â  Â  Â  Â  Â  Â  process_handle_ = INVALID_HANDLE_VALUE;
+Â  Â  Â  Â  }
+Â  Â  Â  Â  memory_cache_.clear();
+Â  Â  Â  Â  while (!cache_queue_.empty()) cache_queue_.pop();
+Â  Â  Â  Â  connected_ = false;
+Â  Â  }
+
+Â  Â  template<typename T>
+Â  Â  std::expected<T, std::string> Read(uintptr_t address) {
+Â  Â  Â  Â  if (!connected_) return std::unexpected("Not connected");
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  // Rate limiting
+Â  Â  Â  Â  if (!CheckRateLimit()) return std::unexpected("Rate limit exceeded");
+Â  Â  Â  Â Â 
+Â  Â  Â  Â  // Check cache first
+Â  Â  Â  Â  {
+Â  Â  Â  Â  Â  Â  std::shared_lock lock  
